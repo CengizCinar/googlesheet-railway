@@ -118,7 +118,7 @@ async function main() {
     console.log(`📊 Google Sheets'ten ASIN'ler okunuyor...`);
     const response = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'EU!B2:B' });
     const sheetValues = response.data.values || [];
-    if (sheetValues.length === 0) throw new Error('Google Sheet'te ASIN bulunamadı!');
+    if (sheetValues.length === 0) throw new Error("Google Sheet'te ASIN bulunamadı!");
 
     const allTasksRaw = [];
     sheetValues.forEach((row, index) => {
