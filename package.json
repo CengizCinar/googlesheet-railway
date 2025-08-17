@@ -1,0 +1,20 @@
+{
+  "name": "googlesheet-api-script",
+  "version": "1.0.0",
+  "description": "Google Sheet API script for Amazon pricing",
+  "main": "run.js",
+  "scripts": {
+    "start": "node api.js"
+  },
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "axios": "^1.8.4",
+    "cheerio": "^1.0.0",
+    "googleapis": "^148.0.0",
+    "node-fetch": "^2.7.0",
+    "p-limit": "^6.2.0",
+    "puppeteer": "^24.6.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
