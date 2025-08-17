@@ -87,3 +87,10 @@ Sunucu çalıştırıldığında, aşağıdaki endpoint'ler (URL'ler) kullanıla
 2.  Tarayıcınızda yer imi olarak kaydettiğiniz `.../start` URL'sine tıklayarak işlemi başlatın.
 3.  İşlemin ilerlemesini merak ederseniz `.../status` URL'sini ziyaret edin.
 4.  Gerekirse `.../pause`, `.../resume` veya `.../stop` URL'lerini kullanarak süreci yönetin.
+
+## 🚧 Gelecekteki Geliştirmeler (To-Do)
+
+- **Google Sheets Buton Entegrasyonu**
+  - Google Sheets'teki `Data` isimli bir sayfaya, API endpoint'lerini (`/start`, `/pause`, `/resume`, `/stop`, `/status`) tetikleyecek butonlar eklenmesi.
+  - Bu butonlar, **Google Apps Script** kullanılarak oluşturulacak ve tıklandığında projenin ilgili webhook URL'sine `UrlFetchApp` servisi ile istek gönderecektir.
+  - `/status` endpoint'inden gelen cevap işlenerek, işlemin mevcut durumu (ilerleme yüzdesi, aktif/pasif durumu vb.) doğrudan Google Sheets üzerinde bir hücrede gösterilebilir. Bu sayede tüm kontrol paneli Google Sheets arayüzüne taşınmış olacaktır.
