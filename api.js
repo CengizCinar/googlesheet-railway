@@ -1,5 +1,7 @@
 const { google } = require('googleapis');
 const axios = require('axios');
+const http = require('http');
+const url = require('url');
 
 // --- Yapılandırma ---
 const SPREADSHEET_ID = '1OOc9on8hfMkf9aZJuDZKX_UsiH2EjbZEQYbwexr5Uds';
@@ -20,6 +22,7 @@ let tokenExpiry = null;
 let allResults = [];
 let startTime = Date.now();
 let currentDelayMs = 1900;
+let isJobRunning = false; // Aynı anda tek bir işin çalışmasını sağlamak için
 
 // --- Yardımcı Fonksiyonlar ---
 function loadApiCredentials() {
@@ -81,6 +84,7 @@ async function getGoogleSheetClient() {
 
 // --- Fiyat Alma Fonksiyonu ---
 async function fetchPriceAndRateLimit({ asin, country }) {
+  // ... (Bu fonksiyonun içeriği değişmedi)
   const countryInfo = COUNTRIES[country];
   if (!countryInfo) throw new Error('Geçersiz ülke');
 
@@ -110,119 +114,143 @@ async function fetchPriceAndRateLimit({ asin, country }) {
 
 // --- Ana Döngü ---
 async function main() {
-  console.log('🚀 Amazon SP-API Dinamik Fiyat Alıcı Başlatılıyor...\n');
-  loadApiCredentials();
-  const sheets = await getGoogleSheetClient();
-  await getAccessToken();
-
-  console.log(`📊 Google Sheets'ten ASIN'ler ve satır numaraları okunuyor...`);
-  const response = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'EU!B2:B' });
-  const sheetValues = response.data.values || [];
-  if (sheetValues.length === 0) return console.log('❌ ASIN bulunamadı!');
-
-  const allTasks = [];
-  sheetValues.forEach((row, index) => {
-    const asin = row[0];
-    if (asin && asin.trim() !== '') { // Sadece dolu satırları işle
-      const rowIndex = index + 2; // +2 çünkü range 'B2' den başlıyor ve index 0-tabanlı
-      for (const country of Object.keys(COUNTRIES)) {
-        allTasks.push({ asin, country, row: rowIndex });
-      }
-    }
-  });
-
-  if (allTasks.length === 0) return console.log('❌ İşlenecek ASIN bulunamadı!');
-  
-  const uniqueAsinCount = new Set(allTasks.map(t => t.asin)).size;
-  console.log(`📝 ${uniqueAsinCount} ASIN ve ${Object.keys(COUNTRIES).length} ülke için toplam ${allTasks.length} API sorgusu yapılacak.`);
-  startTime = Date.now();
-
-  const batchUpdateTimer = setInterval(() => {
-    if (allResults.length > 0) {
-      console.log("\n⏱️ Periyodik güncelleme yapılıyor...");
-      // allResults'in bir kopyasını gönderiyoruz ki ana döngüdeki değişikliklerden etkilenmesin
-      updateGoogleSheet(sheets, [...allResults], null, false);
-    }
-  }, BATCH_UPDATE_INTERVAL);
-
-  for (let i = 0; i < allTasks.length; i++) {
-    const task = allTasks[i];
-    let attempt = 0;
-    let data = null;
-    let headers = null;
-    let error = null;
-  
-    while (attempt < 4) {
-        ({ data, headers, error } = await fetchPriceAndRateLimit(task));
-        const statusCode = error?.response?.status;
-      
-        if (statusCode === 429 && attempt === 0) {
-          console.warn(`[${task.asin} - ${task.country}] ⚠️ 429 alındı, 0.2 saniye sonra tekrar denenecek...`);
-          attempt++;
-          await new Promise(resolve => setTimeout(resolve, 200));
-          continue;
-        }
-        break;
-      }
-  
-    let result = { ...task, price: null, moq: null, success: false, reason: '' };
-    const statusCode = error?.response?.status;
-  
-    if (!error) {
-      const offers = data?.payload?.Offers || [];
-      if (offers.length === 0) {
-        result.reason = 'Teklif Yok';
-        console.log(`[${task.asin} - ${task.country}] ℹ️ Teklif Yok`);
-      } else {
-        let bestPrice = Infinity, bestMoq = 1;
-        for (const offer of offers) {
-          const listingPrice = parseFloat(offer.ListingPrice?.Amount || Infinity);
-          if (listingPrice < bestPrice) {
-            bestPrice = listingPrice;
-            bestMoq = 1;
-          }
-        }
-        if (bestPrice !== Infinity) {
-          result.price = parseFloat(bestPrice.toFixed(2));
-          result.moq = bestMoq;
-          result.success = true;
-          result.reason = 'Başarılı';
-          console.log(`[${task.asin} - ${task.country}] ✅ B2B: €${result.price} (MOQ: ${result.moq})`);
-        } else {
-          result.reason = 'Geçerli Fiyat Yok';
-        }
-      }
-    } else if (statusCode === 400) {
-      result.reason = 'Teklif Yok (400)';
-      console.log(`[${task.asin} - ${task.country}] ℹ️ Teklif Yok (400)`);
-    } else if (statusCode === 429) {
-      result.reason = 'Rate Limit (429)';
-      console.error(`[${task.asin} - ${task.country}] 🚦 Rate Limit (429)`);
-    } else {
-      result.reason = `Hata: ${statusCode || error.message}`;
-      console.error(`[${task.asin} - ${task.country}] ❌ ${result.reason}`);
-    }
-  
-    allResults.push(result);
-  
-    const elapsed = Math.floor((Date.now() - startTime) / 1000);
-    const progress = Math.round(((i + 1) / allTasks.length) * 100);
-    console.log(`--> İlerleme: %${progress} (${i + 1}/${allTasks.length}) | Süre: ${elapsed}s | Sonraki istek için bekleme: ${Math.round(currentDelayMs)}ms`);
-  
-    if (i < allTasks.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, currentDelayMs));
-    }
+  if (isJobRunning) {
+    console.log("ℹ️ Zaten çalışan bir iş var. Yeni iş başlatılmadı.");
+    return;
   }
 
-  clearInterval(batchUpdateTimer);
-  const duration = Math.floor((Date.now() - startTime) / 1000);
-  const formatted = `${Math.floor(duration / 3600)}:${String(Math.floor((duration % 3600) / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`;
-  console.log(`\n🎉 === İŞLEM TAMAMLANDI ===`);
-  await updateGoogleSheet(sheets, allResults, formatted, true);
+  isJobRunning = true;
+  console.log('🚀 Amazon SP-API Dinamik Fiyat Alıcı Başlatılıyor...\n');
+  
+  try {
+    loadApiCredentials();
+    const sheets = await getGoogleSheetClient();
+    await getAccessToken();
+
+    console.log(`📊 Google Sheets'ten ASIN'ler ve satır numaraları okunuyor...`);
+    const response = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'EU!B2:B' });
+    const sheetValues = response.data.values || [];
+    if (sheetValues.length === 0) {
+        console.log('❌ ASIN bulunamadı!');
+        return;
+    }
+
+    const allTasks = [];
+    sheetValues.forEach((row, index) => {
+        const asin = row[0];
+        if (asin && asin.trim() !== '') {
+            const rowIndex = index + 2;
+            for (const country of Object.keys(COUNTRIES)) {
+                allTasks.push({ asin, country, row: rowIndex });
+            }
+        }
+    });
+
+    if (allTasks.length === 0) {
+        console.log('❌ İşlenecek ASIN bulunamadı!');
+        return;
+    }
+    
+    const uniqueAsinCount = new Set(allTasks.map(t => t.asin)).size;
+    console.log(`📝 ${uniqueAsinCount} ASIN ve ${Object.keys(COUNTRIES).length} ülke için toplam ${allTasks.length} API sorgusu yapılacak.`);
+    startTime = Date.now();
+    allResults = []; // Her iş başlangıcında sonuçları sıfırla
+
+    const batchUpdateTimer = setInterval(() => {
+        if (allResults.length > 0) {
+            console.log("\n⏱️ Periyodik güncelleme yapılıyor...");
+            updateGoogleSheet(sheets, [...allResults], null, false);
+            allResults = []; // Periyodik güncelleme sonrası temizle
+        }
+    }, BATCH_UPDATE_INTERVAL);
+
+    for (let i = 0; i < allTasks.length; i++) {
+        const task = allTasks[i];
+        // ... (for döngüsünün geri kalanı değişmedi)
+        let attempt = 0;
+        let data = null;
+        let headers = null;
+        let error = null;
+      
+        while (attempt < 4) {
+            ({ data, headers, error } = await fetchPriceAndRateLimit(task));
+            const statusCode = error?.response?.status;
+          
+            if (statusCode === 429 && attempt === 0) {
+              console.warn(`[${task.asin} - ${task.country}] ⚠️ 429 alındı, 0.2 saniye sonra tekrar denenecek...`);
+              attempt++;
+              await new Promise(resolve => setTimeout(resolve, 200));
+              continue;
+            }
+            break;
+          }
+      
+        let result = { ...task, price: null, moq: null, success: false, reason: '' };
+        const statusCode = error?.response?.status;
+      
+        if (!error) {
+          const offers = data?.payload?.Offers || [];
+          if (offers.length === 0) {
+            result.reason = 'Teklif Yok';
+            console.log(`[${task.asin} - ${task.country}] ℹ️ Teklif Yok`);
+          } else {
+            let bestPrice = Infinity, bestMoq = 1;
+            for (const offer of offers) {
+              const listingPrice = parseFloat(offer.ListingPrice?.Amount || Infinity);
+              if (listingPrice < bestPrice) {
+                bestPrice = listingPrice;
+                bestMoq = 1;
+              }
+            }
+            if (bestPrice !== Infinity) {
+              result.price = parseFloat(bestPrice.toFixed(2));
+              result.moq = bestMoq;
+              result.success = true;
+              result.reason = 'Başarılı';
+              console.log(`[${task.asin} - ${task.country}] ✅ B2B: €${result.price} (MOQ: ${result.moq})`);
+            } else {
+              result.reason = 'Geçerli Fiyat Yok';
+            }
+          }
+        } else if (statusCode === 400) {
+          result.reason = 'Teklif Yok (400)';
+          console.log(`[${task.asin} - ${task.country}] ℹ️ Teklif Yok (400)`);
+        } else if (statusCode === 429) {
+          result.reason = 'Rate Limit (429)';
+          console.error(`[${task.asin} - ${task.country}] 🚦 Rate Limit (429)`);
+        } else {
+          result.reason = `Hata: ${statusCode || error.message}`;
+          console.error(`[${task.asin} - ${task.country}] ❌ ${result.reason}`);
+        }
+      
+        allResults.push(result);
+      
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const progress = Math.round(((i + 1) / allTasks.length) * 100);
+        console.log(`--> İlerleme: %${progress} (${i + 1}/${allTasks.length}) | Süre: ${elapsed}s | Sonraki istek için bekleme: ${Math.round(currentDelayMs)}ms`);
+      
+        if (i < allTasks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, currentDelayMs));
+        }
+    }
+
+    clearInterval(batchUpdateTimer);
+    const duration = Math.floor((Date.now() - startTime) / 1000);
+    const formatted = `${Math.floor(duration / 3600)}:${String(Math.floor((duration % 3600) / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`;
+    console.log(`\n🎉 === İŞLEM TAMAMLANDI ===`);
+    await updateGoogleSheet(sheets, allResults, formatted, true);
+
+  } catch (error) {
+    console.error("❌ Ana işlemde beklenmedik hata:", error);
+  } finally {
+    isJobRunning = false;
+    console.log("✅ İş durumu 'bitti' olarak ayarlandı.");
+  }
 }
 
 // --- Google Sheets Güncelleme ---
 async function updateGoogleSheet(sheets, resultsToUpdate, duration, isFinalUpdate = false) {
+    // ... (Bu fonksiyonun içeriği değişmedi)
     try {
         if (resultsToUpdate.length === 0) {
             if (isFinalUpdate) console.log("📊 Güncellenecek yeni veri yok.");
@@ -232,7 +260,7 @@ async function updateGoogleSheet(sheets, resultsToUpdate, duration, isFinalUpdat
 
         if (isFinalUpdate) {
             const now = new Date();
-            const headerValues = [[
+            const headerValues = [[ 
                 `DE B2B (${now.toLocaleString('tr-TR')})`,
                 `IT B2B (${now.toLocaleString('tr-TR')})`,
                 `ES B2B (${now.toLocaleString('tr-TR')})`,
@@ -288,18 +316,52 @@ async function updateGoogleSheet(sheets, resultsToUpdate, duration, isFinalUpdat
 
         console.log(`✅ Google Sheets güncellendi! (${dataForBatchUpdate.length} satır işlendi)`);
         
-        // Periyodik güncellemeler için, işlenen sonuçları ana listeden temizle
-        if (!isFinalUpdate) {
-            // resultsToUpdate.length kadar öğeyi allResults dizisinin başından sil
-            allResults.splice(0, resultsToUpdate.length);
-        }
-
     } catch (error) {
         console.error('❌ Google Sheets hatası:', error.message, error.stack);
     }
 }
 
+// --- WEB SUNUCUSU ---
+const PORT = process.env.PORT || 3001;
 
-if (require.main === module) {
-  main().catch(console.error);
-}
+const server = http.createServer((req, res) => {
+    const parsedUrl = url.parse(req.url, true);
+    const { pathname, query } = parsedUrl;
+
+    if (pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Sunucu çalışıyor. Tetiklemek için /start endpointini kullanın.');
+        return;
+    }
+
+    if (pathname === '/start') {
+        if (query.token !== process.env.TRIGGER_TOKEN) {
+            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Geçersiz veya eksik güvenlik tokeni.');
+            return;
+        }
+
+        if (isJobRunning) {
+            res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end('Zaten çalışan bir görev var. Lütfen mevcut görevin bitmesini bekleyin.');
+            return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('İş başarıyla başlatıldı. Logları Railway arayüzünden takip edebilirsiniz.');
+
+        // İsteği sonlandırdıktan sonra ana işi asenkron olarak başlat
+        main().catch(err => console.error("Main fonksiyonunda yakalanamayan hata:", err));
+
+    } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Endpoint bulunamadı.');
+    }
+});
+
+server.listen(PORT, () => {
+    console.log(`🚀 Sunucu ${PORT} portunda başlatıldı.`);
+    if (!process.env.TRIGGER_TOKEN) {
+        console.warn("⚠️ UYARI: TRIGGER_TOKEN ortam değişkeni ayarlanmamış. Sunucu güvensiz modda çalışıyor.");
+    }
+});
