@@ -323,45 +323,91 @@ async function updateGoogleSheet(sheets, resultsToUpdate, duration, isFinalUpdat
 
 // --- WEB SUNUCUSU ---
 const PORT = process.env.PORT || 3001;
+loadApiCredentials(); // Sunucu başlarken credentialları yükle
 
 const server = http.createServer((req, res) => {
     const parsedUrl = url.parse(req.url, true);
     const { pathname, query } = parsedUrl;
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
 
-    if (pathname === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Sunucu çalışıyor. Tetiklemek için /start endpointini kullanın.');
+    if (query.token !== process.env.TRIGGER_TOKEN && pathname !== '/') {
+        res.writeHead(403).end(JSON.stringify({ success: false, message: 'Geçersiz veya eksik güvenlik tokeni.' }));
         return;
     }
 
-    if (pathname === '/start') {
-        if (query.token !== process.env.TRIGGER_TOKEN) {
-            res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Geçersiz veya eksik güvenlik tokeni.');
-            return;
-        }
-
-        if (isJobRunning) {
-            res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8' });
-            res.end('Zaten çalışan bir görev var. Lütfen mevcut görevin bitmesini bekleyin.');
-            return;
-        }
-
-        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('İş başarıyla başlatıldı. Logları Railway arayüzünden takip edebilirsiniz.');
-
-        // İsteği sonlandırdıktan sonra ana işi asenkron olarak başlat
-        main().catch(err => console.error("Main fonksiyonunda yakalanamayan hata:", err));
-
-    } else {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('Endpoint bulunamadı.');
+    switch (pathname) {
+        case '/':
+            res.writeHead(200).end(JSON.stringify({ success: true, message: 'Sunucu çalışıyor.' }));
+            break;
+        case '/start':
+            if (isJobRunning) {
+                res.writeHead(429).end(JSON.stringify({
+                    success: false, message: 'Zaten çalışan bir görev var.'
+                }));
+            } else {
+                res.writeHead(200).end(JSON.stringify({
+                    success: true, message: 'İş başarıyla başlatıldı.'
+                }));
+                main(); // Asenkron olarak başlat
+            }
+            break;
+        case '/pause':
+            if (!isJobRunning || isPaused) {
+                res.writeHead(400).end(JSON.stringify({
+                    success: false, message: 'Çalışan veya duraklatılmamış bir iş yok.'
+                }));
+            } else {
+                isPaused = true;
+                res.writeHead(200).end(JSON.stringify({
+                    success: true, message: 'İş duraklatıldı.'
+                }));
+            }
+            break;
+        case '/resume':
+            if (!isJobRunning || !isPaused) {
+                res.writeHead(400).end(JSON.stringify({
+                    success: false, message: 'Devam ettirilecek duraklatılmış bir iş yok.'
+                }));
+            } else {
+                isPaused = false;
+                res.writeHead(200).end(JSON.stringify({
+                    success: true, message: 'İş devam ettiriliyor.'
+                }));
+            }
+            break;
+        case '/stop':
+            if (!isJobRunning) {
+                res.writeHead(400).end(JSON.stringify({
+                    success: false, message: 'Durdurulacak bir iş yok.'
+                }));
+            } else {
+                shouldStop = true;
+                isPaused = false; // Duraklatılmışsa döngüden çıkmasını sağla
+                res.writeHead(200).end(JSON.stringify({
+                    success: true, message: 'İşin durdurulması istendi.'
+                }));
+            }
+            break;
+        case '/status':
+            const progress = totalTasks > 0 ? Math.round((processedTasks / totalTasks) * 100) : 0;
+            res.writeHead(200).end(JSON.stringify({
+                success: true,
+                isJobRunning,
+                isPaused,
+                processedTasks,
+                totalTasks,
+                progress: `${progress}%`
+            }));
+            break;
+        default:
+            res.writeHead(404).end(JSON.stringify({ success: false, message: 'Endpoint bulunamadı.' }));
     }
 });
 
 server.listen(PORT, () => {
     console.log(`🚀 Sunucu ${PORT} portunda başlatıldı.`);
     if (!process.env.TRIGGER_TOKEN) {
-        console.warn("⚠️ UYARI: TRIGGER_TOKEN ortam değişkeni ayarlanmamış. Sunucu güvensiz modda çalışıyor.");
+        console.warn("⚠️ UYARI: TRIGGER_TOKEN ortam değişkeni ayarlanmamış.");
     }
 });
+
